@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-binance
+python-dotenv
+pydantic
+requests
+python-multipart
+aiofiles
+pandas
+binance_client
