@@ -37,36 +37,48 @@ const APIConnectionPage = () => {
   // التحقق من صحة وحفظ API
   const handleConnect = async () => {
     setLoading(true);
+    setError(null);
+    
     try {
-      const response = await fetch('http://localhost:3000/api/binance/connect', {
+      // التحقق من صحة API
+      const validateResponse = await fetch('http://localhost:3000/api/exchange/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          api_key: apiData.api_key,
-          api_secret: apiData.api_secret
-        })
+        body: JSON.stringify(apiData)
       });
-  
-      const data = await response.json();
-      
-      if (response.ok) {
-        setValidationStatus('success');
-        // تخزين حالة الاتصال
-        localStorage.setItem('binance_connected', 'true');
+      const validateData = await validateResponse.json();
+
+      if (validateData.status === 'success') {
+        // حفظ API
+        const connectResponse = await fetch('http://localhost:3000/api/exchange/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(apiData)
+        });
+        const connectData = await connectResponse.json();
+
+        if (connectData.status === 'success') {
+          setValidationStatus('success');
+          fetchConnectedApis();
+          setApiData({
+            exchange: 'binance',
+            api_key: '',
+            api_secret: '',
+            name: ''
+          });
+        }
       } else {
         setValidationStatus('error');
-        setError(data.detail);
+        setError(validateData.message);
       }
     } catch (err) {
       setValidationStatus('error');
       setError('حدث خطأ في الاتصال');
+      console.error(err);
     } finally {
       setLoading(false);
     }
   };
-  
-    
-  
 
   const handleInputChange = (e) => {
     setApiData({
@@ -84,6 +96,7 @@ const APIConnectionPage = () => {
           <h1 className="text-2xl font-semibold mb-2">Connect Exchange</h1>
           <p className="text-gray-400">Connect your exchange account to start trading</p>
         </div>
+        {/* Security Notice */}
         <div className="bg-[#2d4a7c] rounded-lg p-4 mb-8 flex items-start space-x-4">
           <Shield className="w-6 h-6 text-emerald-500 flex-shrink-0" />
           <div>

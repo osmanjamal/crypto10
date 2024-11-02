@@ -1,152 +1,88 @@
 from fastapi import APIRouter, HTTPException
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
-from typing import Dict
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
+import json
 import os
+from cryptography.fernet import Fernet
 
 router = APIRouter()
 
-class BinanceManager:
-    _instance = None
-    _client = None
+# نموذج بيانات API
+class ExchangeAPI(BaseModel):
+    exchange: str
+    api_key: str
+    api_secret: str
+    name: Optional[str] = None
 
-    @classmethod
-    def get_instance(cls):
-        if cls._instance is None:
-            cls._instance = BinanceManager()
-        return cls._instance
+# توليد مفتاح التشفير (يجب تخزينه بشكل آمن في الإنتاج)
+ENCRYPTION_KEY = Fernet.generate_key()
+fernet = Fernet(ENCRYPTION_KEY)
 
-    def set_credentials(self, api_key: str, api_secret: str):
-        self._client = Client(api_key, api_secret)
+def encrypt_data(text: str) -> str:
+    return fernet.encrypt(text.encode()).decode()
 
-    def get_client(self):
-        if not self._client:
-            raise HTTPException(status_code=400, detail="Binance API not configured")
-        return self._client
+def decrypt_data(encrypted_text: str) -> str:
+    return fernet.decrypt(encrypted_text.encode()).decode()
 
-@router.post("/api/binance/connect")
-async def connect_binance(credentials: Dict[str, str]):
+@router.post("/api/exchange/connect")
+async def connect_exchange(api_data: ExchangeAPI):
+    """ربط حساب البورصة"""
     try:
-        # إنشاء عميل Binance للتحقق من صحة المفاتيح
-        client = Client(credentials['api_key'], credentials['api_secret'])
-        # اختبار الاتصال
-        client.get_account()
-        
-        # حفظ المفاتيح بشكل آمن (يمكنك استخدام قاعدة بيانات)
-        BinanceManager.get_instance().set_credentials(
-            credentials['api_key'],
-            credentials['api_secret']
-        )
-        
-        return {"status": "success", "message": "تم الاتصال بنجاح"}
-    except BinanceAPIException as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # تشفير البيانات الحساسة
+        encrypted_api_key = encrypt_data(api_data.api_key)
+        encrypted_api_secret = encrypt_data(api_data.api_secret)
 
-@router.get("/api/account/balance")
-async def get_account_balance():
-    try:
-        client = BinanceManager.get_instance().get_client()
-        account = client.get_account()
-        
-        # تحويل البيانات
-        balances = [
-            {
-                'asset': balance['asset'],
-                'free': float(balance['free']),
-                'locked': float(balance['locked'])
-            }
-            for balance in account['balances']
-            if float(balance['free']) > 0 or float(balance['locked']) > 0
-        ]
-
-        # الحصول على أسعار USDT
-        prices = client.get_symbol_ticker()
-        price_dict = {item['symbol']: float(item['price']) for item in prices}
-
-        # حساب القيمة بالدولار
-        for balance in balances:
-            if balance['asset'] == 'USDT':
-                balance['usd_value'] = balance['free'] + balance['locked']
-            else:
-                symbol = f"{balance['asset']}USDT"
-                if symbol in price_dict:
-                    balance['usd_value'] = (balance['free'] + balance['locked']) * price_dict[symbol]
-                else:
-                    balance['usd_value'] = 0
-
-        total_usd = sum(b['usd_value'] for b in balances)
-
-        return {
-            "balances": balances,
-            "total_usd": total_usd
+        # حفظ البيانات المشفرة
+        api_info = {
+            "exchange": api_data.exchange,
+            "name": api_data.name,
+            "api_key": encrypted_api_key,
+            "api_secret": encrypted_api_secret,
+            "created_at": datetime.now().isoformat(),
+            "status": "active"
         }
-    except BinanceAPIException as e:
-        raise HTTPException(status_code=400, detail=str(e))
+
+        # حفظ في ملف (يمكن استبدالها بقاعدة بيانات)
+        with open('exchange_apis.json', 'a') as f:
+            json.dump(api_info, f)
+            f.write('\n')
+
+        return {"status": "success", "message": "تم ربط API بنجاح"}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/api/trading/active-orders")
-async def get_active_orders():
+@router.get("/api/exchange/list")
+async def list_exchanges():
+    """الحصول على قائمة APIs المتصلة"""
     try:
-        client = BinanceManager.get_instance().get_client()
-        orders = client.get_open_orders()
+        apis = []
+        if os.path.exists('exchange_apis.json'):
+            with open('exchange_apis.json', 'r') as f:
+                for line in f:
+                    api = json.loads(line)
+                    # نحذف البيانات الحساسة قبل الإرسال
+                    api.pop('api_secret')
+                    api['api_key'] = api['api_key'][:8] + '...'
+                    apis.append(api)
         
-        return [{
-            "symbol": order['symbol'],
-            "side": order['side'],
-            "type": order['type'],
-            "quantity": float(order['origQty']),
-            "price": float(order['price']) if order['price'] != '0' else None,
-            "created_at": order['time']
-        } for order in orders]
-    except BinanceAPIException as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return apis
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
-@router.get("/api/account/balance")
-async def get_account_balance():
+@router.post("/api/exchange/validate")
+async def validate_api(api_data: ExchangeAPI):
+    """التحقق من صحة بيانات API"""
     try:
-        client = BinanceManager.get_instance().get_client()
-        account = client.get_account()
-        # طباعة للتشخيص
-        print("Account data:", account)
+        # هنا يمكنك إضافة التحقق الفعلي مع البورصة
+        is_valid = True  # للتجربة فقط
         
-        balances = [
-            {
-                'asset': balance['asset'],
-                'free': float(balance['free']),
-                'locked': float(balance['locked'])
-            }
-            for balance in account['balances']
-            if float(balance['free']) > 0 or float(balance['locked']) > 0
-        ]
-
-        prices = client.get_symbol_ticker()
-        price_dict = {item['symbol']: float(item['price']) for item in prices}
-
-        # طباعة للتشخيص
-        print("Balances:", balances)
-        print("Prices:", price_dict)
-
-        total_usd = sum(
-            balance['usd_value'] 
-            for balance in balances 
-            if 'usd_value' in balance
-        )
-
         return {
-            "balances": balances,
-            "total_usd": total_usd
+            "status": "success" if is_valid else "error",
+            "message": "تم التحقق بنجاح" if is_valid else "بيانات API غير صحيحة"
         }
-    except BinanceAPIException as e:
-        print("Binance API Error:", str(e))  # طباعة خطأ Binance
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        print("General Error:", str(e))  # طباعة الخطأ العام
-        raise HTTPException(status_code=500, detail=str(e))
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
